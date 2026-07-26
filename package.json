@@ -1,7 +1,8 @@
 {
   "name": "bellwright-mod-launcher",
-  "version": "0.6.1",
-  "description": "Small local mod launcher for Bellwright.",
+  "productName": "ExOne Mod Launcher",
+  "version": "0.7.2",
+  "description": "Multi-game mod launcher for Bellwright and Total War: WARHAMMER III by ExcelsiorOne.",
   "main": "main.js",
   "repository": {
     "type": "git",
@@ -15,9 +16,12 @@
     "start": "electron .",
     "test": "node --test test/*.test.js",
     "test:layout": "electron scripts/verify-large-list-layout.js",
+    "test:switcher": "electron scripts/verify-game-switcher-layout.js",
+    "test:tooltip": "electron scripts/verify-workshop-tooltip-layout.js",
     "package:win": "powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1"
   },
   "devDependencies": {
-    "electron": "^43.0.0"
+    "electron": "^43.0.0",
+    "rcedit": "^5.0.2"
   }
 }

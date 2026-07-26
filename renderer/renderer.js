@@ -2,6 +2,11 @@ const availableList = document.querySelector("#availableList");
 const windowTitlebar = document.querySelector("#windowTitlebar");
 const windowMinimizeButton = document.querySelector("#windowMinimizeButton");
 const windowCloseButton = document.querySelector("#windowCloseButton");
+const gameSwitcher = document.querySelector("#gameSwitcher");
+const gameSwitcherButton = document.querySelector("#gameSwitcherButton");
+const gameSwitcherMenu = document.querySelector("#gameSwitcherMenu");
+const gameMark = document.querySelector("#gameMark");
+const gameHeading = document.querySelector("#gameHeading");
 const activeList = document.querySelector("#activeList");
 const availableEmpty = document.querySelector("#availableEmpty");
 const activeEmpty = document.querySelector("#activeEmpty");
@@ -10,12 +15,19 @@ const gameState = document.querySelector("#gameState");
 const activeCount = document.querySelector("#activeCount");
 const availableCount = document.querySelector("#availableCount");
 const workshopCount = document.querySelector("#workshopCount");
+const statusStrip = document.querySelector(".statusStrip");
+const nativeRuntimeStatusItem = document.querySelector("#nativeRuntimeStatusItem");
 const nativeRuntimeState = document.querySelector("#nativeRuntimeState");
 const activeColumnCount = document.querySelector("#activeColumnCount");
 const availableColumnCount = document.querySelector("#availableColumnCount");
+const availableColumnTitle = document.querySelector("#availableColumnTitle");
+const availableColumnHint = document.querySelector("#availableColumnHint");
+const activeColumnTitle = document.querySelector("#activeColumnTitle");
+const activeColumnHint = document.querySelector("#activeColumnHint");
 const refreshButton = document.querySelector("#refreshButton");
 const folderButton = document.querySelector("#folderButton");
 const launchButton = document.querySelector("#launchButton");
+const continueButton = document.querySelector("#continueButton");
 const searchInput = document.querySelector("#searchInput");
 const presetSelect = document.querySelector("#presetSelect");
 const savePresetButton = document.querySelector("#savePresetButton");
@@ -77,6 +89,7 @@ let launcherUpdateSupported = false;
 let launcherUpdateRepo = "GitHub";
 let latestNativeRuntime = null;
 let nativeRuntimeRevision = 0;
+let games = [];
 
 const icons = {
   power: '<svg viewBox="0 0 24 24"><path d="M12 2v10" /><path d="M18.4 6.6a9 9 0 1 1-12.8 0" /></svg>',
@@ -87,6 +100,96 @@ const icons = {
   external: '<svg viewBox="0 0 24 24"><path d="M15 3h6v6" /><path d="m10 14 11-11" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>'
   ,settings: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3A1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></svg>'
 };
+
+function currentGame() {
+  return state?.game || {
+    id: "bellwright",
+    label: "Bellwright",
+    launcherTitle: "Bellwright Mod Launcher",
+    logoAsset: "./assets/games/bellwright-icon.png",
+    accent: "#d9b45f",
+    accentSecondary: "#7fb0a4",
+    capabilities: {},
+    labels: {}
+  };
+}
+
+function supports(capability) {
+  return Boolean(currentGame().capabilities?.[capability]);
+}
+
+function gameLogoHtml(game) {
+  const fallback = game.id === "warhammer3" ? "III" : "BW";
+  return `<span class="gameLogoAsset" data-game-id="${escapeHtml(game.id)}">
+    <img src="${escapeHtml(game.logoAsset || "")}" alt="" />
+    <span class="gameLogoFallback">${fallback}</span>
+  </span>`;
+}
+
+function bindLogoFallbacks(root) {
+  root.querySelectorAll(".gameLogoAsset img").forEach((image) => {
+    const markMissing = () => image.closest(".gameLogoAsset")?.classList.add("logoMissing");
+    image.addEventListener("error", markMissing, { once: true });
+    if (image.complete && image.naturalWidth === 0) {
+      markMissing();
+    }
+  });
+}
+
+function renderGameMenu() {
+  const selectedId = currentGame().id;
+  gameSwitcherMenu.innerHTML = "";
+  for (const game of games) {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "gameSwitcherOption";
+    option.setAttribute("role", "menuitemradio");
+    option.setAttribute("aria-checked", String(game.id === selectedId));
+    option.setAttribute("aria-current", String(game.id === selectedId));
+    option.dataset.gameId = game.id;
+    option.innerHTML = `${gameLogoHtml(game)}<span>${escapeHtml(game.label)}</span>`;
+    option.addEventListener("click", () => selectGame(game.id));
+    gameSwitcherMenu.appendChild(option);
+  }
+  bindLogoFallbacks(gameSwitcherMenu);
+}
+
+function closeGameMenu() {
+  gameSwitcherMenu.hidden = true;
+  gameSwitcherButton.setAttribute("aria-expanded", "false");
+}
+
+async function selectGame(gameId) {
+  if (busy || gameId === currentGame().id) {
+    closeGameMenu();
+    return;
+  }
+  try {
+    setBusy(true);
+    closeGameMenu();
+    hideModTooltip();
+    state = await window.bellwrightMods.selectGame(gameId);
+    latestNativeRuntime = state.nativeRuntime;
+    nativeRuntimeRevision += 1;
+    searchInput.value = "";
+    presets = [];
+    render();
+    await loadPresets();
+  } catch (error) {
+    showToast(error.message || String(error), true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function loadGames() {
+  try {
+    games = await window.bellwrightMods.listGames();
+    renderGameMenu();
+  } catch (error) {
+    showToast(error.message || String(error), true);
+  }
+}
 
 function closeSettingsModal() {
   settingsModalBackdrop.hidden = true;
@@ -244,26 +347,33 @@ function askConfirm(title, message, confirmText = "OK") {
 function setBusy(value) {
   busy = value;
   refreshButton.disabled = value;
-  folderButton.disabled = value;
-  launchButton.disabled = value;
-  savePresetButton.disabled = value;
+  folderButton.disabled = value || !supports("openModsFolder");
+  launchButton.disabled = value || !supports("launch") || Boolean(state?.gameRunning);
+  continueButton.disabled =
+    value ||
+    !supports("continueFromLastSave") ||
+    Boolean(state?.gameRunning) ||
+    !state?.latestSave;
+  savePresetButton.disabled = value || !supports("presets");
   updateButton.disabled = value;
-  loadPresetButton.disabled = value || !presetSelect.value || !state || state.gameRunning;
-  sharePresetButton.disabled = value || !presetSelect.value;
-  importPresetButton.disabled = value;
-  deletePresetButton.disabled = value || !presetSelect.value;
-  presetSelect.disabled = value || presets.length === 0;
+  loadPresetButton.disabled = value || !supports("presets") || !presetSelect.value || !state || state.gameRunning;
+  sharePresetButton.disabled = value || !supports("presets") || !presetSelect.value;
+  importPresetButton.disabled = value || !supports("presets");
+  deletePresetButton.disabled = value || !supports("presets") || !presetSelect.value;
+  presetSelect.disabled = value || !supports("presets") || presets.length === 0;
+  searchInput.disabled = value || !supports("modManagement");
   document.querySelectorAll(".toggleButton").forEach((button) => {
-    button.disabled = value || state?.gameRunning;
+    button.disabled =
+      value || !supports("activation") || state?.gameRunning || button.dataset.blocked === "true";
   });
   document.querySelectorAll(".orderButton").forEach((button) => {
-    button.disabled = value || state?.gameRunning || button.dataset.blocked === "true";
+    button.disabled = value || !supports("loadOrder") || state?.gameRunning || button.dataset.blocked === "true";
   });
   document.querySelectorAll(".settingsButton").forEach((button) => {
-    button.disabled = value;
+    button.disabled = value || !supports("modSettings");
   });
   document.querySelectorAll(".modCard").forEach((card) => {
-    card.draggable = !(value || state?.gameRunning);
+    card.draggable = !(value || !supports("activation") || state?.gameRunning);
   });
   if (!value && pendingGameRunningState !== null) {
     queueMicrotask(flushPendingGameRunningState);
@@ -271,6 +381,12 @@ function setBusy(value) {
 }
 
 function getStatusLabel(mod) {
+  if (currentGame().id === "warhammer3") {
+    return {
+      text: mod.status === "active" ? "Selected" : "Not selected",
+      className: mod.status === "active" ? "workshop" : "disabled"
+    };
+  }
   if (mod.source === "workshop") {
     return {
       text: mod.status === "active" ? "Workshop On" : "Workshop Off",
@@ -389,6 +505,9 @@ function mergeNativeRuntimeIntoState(targetState, runtime) {
 function handleNativeRuntimeChanged(runtime) {
   latestNativeRuntime = runtime;
   nativeRuntimeRevision += 1;
+  if (!supports("nativeRuntime")) {
+    return;
+  }
   if (state) {
     mergeNativeRuntimeIntoState(state, runtime);
     render();
@@ -475,6 +594,11 @@ function renderPresets(selectedId = presetSelect.value) {
 }
 
 async function loadPresets(selectedId = presetSelect.value) {
+  if (!supports("presets")) {
+    presets = [];
+    renderPresets();
+    return;
+  }
   try {
     presets = await window.bellwrightMods.listPresets();
     renderPresets(selectedId);
@@ -576,7 +700,7 @@ function renderSharePreview(inspection) {
 async function previewSharedPreset() {
   const code = shareCodeInput.value.trim();
   if (!code) {
-    showToast("Paste a BWL1 preset code first.", true);
+    showToast(`Paste a ${currentGame().id === "warhammer3" ? "EX1W3" : "BWL1"} preset code first.`, true);
     shareCodeInput.focus();
     return;
   }
@@ -641,17 +765,46 @@ function render() {
     return;
   }
 
+  const game = currentGame();
+  const labels = game.labels || {};
   const query = searchInput.value.trim().toLowerCase();
   const activeMods = state.mods.filter((mod) => mod.status === "active");
   const availableMods = state.mods.filter((mod) => mod.status === "disabled");
   const workshopMods = state.mods.filter((mod) => mod.source === "workshop");
 
-  pathLine.textContent = `Local: ${state.modsRoot} | Workshop: ${state.workshopRoot}`;
+  document.documentElement.style.setProperty("--accent", game.accent || "#d9b45f");
+  document.documentElement.style.setProperty("--accent-2", game.accentSecondary || "#7fb0a4");
+  gameMark.dataset.gameId = game.id;
+  gameMark.innerHTML = gameLogoHtml(game);
+  bindLogoFallbacks(gameMark);
+  gameHeading.textContent = game.launcherTitle;
+  availableColumnTitle.textContent = labels.available || "Available";
+  availableColumnHint.textContent = labels.availableHint || "Installed but not active";
+  activeColumnTitle.textContent = labels.active || "Active";
+  activeColumnHint.textContent = labels.activeHint || "Loaded by Bellwright";
+  searchInput.placeholder = labels.searchPlaceholder || "Search mods";
+  folderButton.title = labels.folderTitle || "Open mods folder";
+  folderButton.setAttribute("aria-label", folderButton.title);
+  launchButton.lastChild.textContent = ` ${labels.launch || "Launch"}`;
+  launchButton.title = state.gameRunning ? `${game.label} is already running` : `Launch ${game.label}`;
+  continueButton.hidden = !supports("continueFromLastSave");
+  continueButton.lastChild.textContent = ` ${labels.continueFromLastSave || "Continue from last save"}`;
+  continueButton.title = state.gameRunning
+    ? `${game.label} is already running`
+    : state.latestSave
+      ? `Continue ${state.latestSave.name}`
+      : `No ${game.label} saves found`;
+  shareCodeInput.placeholder = game.id === "warhammer3" ? "Paste EX1W3 preset code" : "Paste BWL1 preset code";
+  shareCodeInput.setAttribute("aria-label", `${game.label} preset share code`);
+  pathLine.textContent = state.pathSummary || `Local: ${state.modsRoot} | Workshop: ${state.workshopRoot}`;
   gameState.textContent = state.gameRunning ? "Running" : "Closed";
   gameState.style.color = state.gameRunning ? "var(--danger)" : "var(--ok)";
   activeCount.textContent = activeMods.length;
   availableCount.textContent = availableMods.length;
   workshopCount.textContent = workshopMods.length;
+  const nativeRuntimeSupported = supports("nativeRuntime");
+  statusStrip.classList.toggle("statusStripFourColumns", !nativeRuntimeSupported);
+  nativeRuntimeStatusItem.hidden = !nativeRuntimeSupported;
   renderNativeRuntime(state.nativeRuntime);
 
   const visibleActive = filterMods(activeMods, query);
@@ -662,6 +815,9 @@ function render() {
 
   renderColumn(activeList, activeEmpty, visibleActive);
   renderColumn(availableList, availableEmpty, visibleAvailable);
+  availableEmpty.textContent = game.id === "warhammer3" ? "All discovered Workshop mods are selected" : "No inactive mods";
+  activeEmpty.textContent = game.id === "warhammer3" ? "No selected mods found in used_mods.txt" : "Drop mods here to activate";
+  renderGameMenu();
   setBusy(busy);
 }
 
@@ -689,6 +845,43 @@ function getOrderedActiveMods() {
   return [...(state?.mods || []).filter((mod) => mod.status === "active")].sort(compareActiveOrder);
 }
 
+function clearDropIndicator() {
+  document.querySelectorAll(".modCard.dropBefore, .modCard.dropAfter").forEach((card) => {
+    card.classList.remove("dropBefore", "dropAfter");
+  });
+}
+
+function getDropPlacement(event, column) {
+  const cards = [...column.querySelectorAll(".modCard:not(.dragging)")];
+  if (!cards.length) {
+    return null;
+  }
+
+  const directCard = event.target.closest?.(".modCard:not(.dragging)");
+  if (directCard && column.contains(directCard)) {
+    const bounds = directCard.getBoundingClientRect();
+    return {
+      referenceKey: directCard.dataset.key,
+      position: event.clientY < bounds.top + bounds.height / 2 ? "before" : "after",
+      card: directCard
+    };
+  }
+
+  for (const card of cards) {
+    const bounds = card.getBoundingClientRect();
+    if (event.clientY < bounds.top + bounds.height / 2) {
+      return { referenceKey: card.dataset.key, position: "before", card };
+    }
+  }
+  const lastCard = cards[cards.length - 1];
+  return { referenceKey: lastCard.dataset.key, position: "after", card: lastCard };
+}
+
+function showDropIndicator(placement) {
+  clearDropIndicator();
+  placement?.card?.classList.add(placement.position === "before" ? "dropBefore" : "dropAfter");
+}
+
 function renderColumn(list, empty, mods) {
   list.innerHTML = "";
   empty.hidden = mods.length !== 0;
@@ -705,7 +898,9 @@ function renderColumn(list, empty, mods) {
     card.dataset.key = modKey(mod);
     card.tabIndex = 0;
 
-    const actionLabel = mod.status === "active" ? "Deactivate" : "Activate";
+    const inPlaceGame = currentGame().id === "warhammer3";
+    const toggleAllowed = !(inPlaceGame && mod.source !== "workshop");
+    const actionLabel = toggleAllowed ? (mod.status === "active" ? "Deactivate" : "Activate") : "Order only";
     const actionClass = mod.status === "active" ? "disable" : "enable";
     const actionIcon = mod.status === "active" ? icons.pause : icons.power;
     const status = getStatusLabel(mod);
@@ -718,10 +913,10 @@ function renderColumn(list, empty, mods) {
       ? `<button class="conflictBadge${conflictClass}" type="button" aria-label="${mod.status === "active" ? "Active conflict" : "Potential conflict"}">${icons.alert}<span>${conflictCount}</span></button>`
       : "";
     const orderControls =
-      mod.status === "active"
-        ? `<div class="orderControls" aria-label="Load priority">
-            <button class="orderButton" type="button" data-direction="-1" data-blocked="${activeIndex <= 0}" title="Move earlier" aria-label="Move earlier">${icons.up}</button>
-            <button class="orderButton" type="button" data-direction="1" data-blocked="${activeIndex >= orderedActiveMods.length - 1}" title="Move later" aria-label="Move later">${icons.down}</button>
+      mod.status === "active" && supports("loadOrder")
+        ? `<div class="orderControls" aria-label="Load priority; number 1 is highest">
+            <button class="orderButton" type="button" data-direction="-1" data-blocked="${activeIndex <= 0}" title="Move up — higher priority" aria-label="Move up to higher priority">${icons.up}</button>
+            <button class="orderButton" type="button" data-direction="1" data-blocked="${activeIndex >= orderedActiveMods.length - 1}" title="Move down — lower priority" aria-label="Move down to lower priority">${icons.down}</button>
           </div>`
         : "";
     const settingsGroup = mod.launcherSettings?.groups?.[0];
@@ -736,12 +931,16 @@ function renderColumn(list, empty, mods) {
       : mod.activeConflictCount
         ? `${mod.activeConflictCount} active conflict${mod.activeConflictCount === 1 ? "" : "s"}`
       : mod.source === "workshop"
-        ? "Steam may restore on update"
-        : "";
+        ? inPlaceGame
+          ? "Workshop content stays in place"
+          : "Steam may restore on update"
+        : inPlaceGame
+          ? "Local pack: order only"
+          : "";
 
     card.innerHTML = `
       <div class="modHeader">
-        ${loadOrderText ? `<span class="loadOrderBadge" title="Load priority ${mod.priority || ""}">${loadOrderText}</span>` : ""}
+        ${loadOrderText ? `<span class="loadOrderBadge" title="Priority #${activeIndex + 1}${activeIndex === 0 ? " — highest" : ""}">${loadOrderText}</span>` : ""}
         <div class="modTitle">
           <h2>${escapeHtml(mod.title)}</h2>
           <div class="folderName">${escapeHtml(mod.modName || mod.displayFolderName || mod.folderName)}</div>
@@ -755,7 +954,7 @@ function renderColumn(list, empty, mods) {
       </div>
       <div class="cardActions">
         ${orderControls}
-        <button class="toggleButton ${actionClass}">
+        <button class="toggleButton ${actionClass}" data-blocked="${!toggleAllowed}" title="${toggleAllowed ? actionLabel : "Local data packs can only be reordered"}">
           ${actionIcon}
           <span>${actionLabel}</span>
         </button>
@@ -790,7 +989,7 @@ function renderColumn(list, empty, mods) {
     }
 
     card.addEventListener("dragstart", (event) => {
-      if (busy || state.gameRunning) {
+      if (busy || !supports("activation") || state.gameRunning) {
         event.preventDefault();
         return;
       }
@@ -811,13 +1010,17 @@ function renderColumn(list, empty, mods) {
 
     card.addEventListener("dragend", () => {
       card.classList.remove("dragging");
+      clearDropIndicator();
       dropColumns.forEach((column) => column.classList.remove("dragOver"));
     });
 
     const button = card.querySelector(".toggleButton");
-    button.disabled = busy || state.gameRunning;
+    button.disabled = busy || state.gameRunning || !supports("activation") || !toggleAllowed;
     button.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (!toggleAllowed) {
+        return;
+      }
       moveMod(mod, mod.status === "active" ? "available" : "active");
     });
 
@@ -842,28 +1045,44 @@ function renderColumn(list, empty, mods) {
   }
 }
 
-async function moveMod(mod, targetColumn) {
+async function applyActivePlacement(mod, placement) {
+  const currentKeys = getOrderedActiveMods().map(modKey);
+  const nextKeys = window.dragOrder.reorderKeys(currentKeys, modKey(mod), placement);
+  if (currentKeys.every((key, index) => key === nextKeys[index])) {
+    return state;
+  }
+  return window.bellwrightMods.setLoadOrder({ keys: nextKeys });
+}
+
+async function moveMod(mod, targetColumn, placement = null) {
   if (busy) {
     return;
   }
   hideModTooltip();
-  if (state?.gameRunning) {
-    showToast("Close Bellwright before changing enabled mods.", true);
+  if (currentGame().id === "warhammer3" && mod.source !== "workshop" && targetColumn === "available") {
+    showToast("Local data packs stay selected because they cannot be rediscovered safely after removal.", true);
     return;
   }
-  if ((targetColumn === "active" && mod.status === "active") || (targetColumn === "available" && mod.status === "disabled")) {
+  if (state?.gameRunning) {
+    showToast(`Close ${currentGame().label} before changing enabled mods.`, true);
+    return;
+  }
+  if (targetColumn === "available" && mod.status === "disabled") {
     return;
   }
 
   try {
     setBusy(true);
     if (targetColumn === "active") {
-      state = await window.bellwrightMods.enable({
-        folderName: mod.folderName,
-        sourceRoot: mod.sourceRoot,
-        source: mod.source
-      });
-      showToast(`${mod.title} activated.`);
+      if (mod.status !== "active") {
+        state = await window.bellwrightMods.enable({
+          folderName: mod.folderName,
+          sourceRoot: mod.sourceRoot,
+          source: mod.source
+        });
+      }
+      state = await applyActivePlacement(mod, placement);
+      showToast(mod.status === "active" ? "Load order updated." : `${mod.title} activated and positioned.`);
     } else {
       state = await window.bellwrightMods.disable({
         folderName: mod.folderName,
@@ -885,7 +1104,7 @@ async function moveLoadOrder(mod, direction) {
   }
   hideModTooltip();
   if (state?.gameRunning) {
-    showToast("Close Bellwright before changing load order.", true);
+    showToast(`Close ${currentGame().label} before changing load order.`, true);
     return;
   }
 
@@ -992,7 +1211,13 @@ function showConflictTooltip(mod, event) {
 
   const rows = conflicts.slice(0, 3).map((conflict) => {
     const other = getOtherConflictMod(conflict, mod);
-    const winner = conflict.winner ? `<span>Winner now: ${escapeHtml(conflict.winner.title)}</span>` : "";
+    const isPackFileOverlap = conflict.kind === "pack-file-overlap";
+    const winner = conflict.winner
+      ? `<span>${isPackFileOverlap ? "Priority winner" : "Winner now"}: ${escapeHtml(conflict.winner.title)}</span>`
+      : "";
+    const resolutionNote = conflict.resolutionNote
+      ? `<span>${escapeHtml(conflict.resolutionNote)}</span>`
+      : "";
     const duplicate = conflict.duplicateInstall ? "<span>Duplicate install</span>" : "";
     return `<section class="conflictTooltipItem ${conflict.severity || "low"}">
       <div class="conflictTooltipTitle">
@@ -1000,9 +1225,10 @@ function showConflictTooltip(mod, event) {
         <strong>${escapeHtml(other?.title || "Unknown mod")}</strong>
       </div>
       <div class="conflictTooltipMeta">
-        <span>${conflict.bothActive ? "Active conflict" : "Potential conflict"}</span>
-        <span>${conflict.assetCount} shared asset${conflict.assetCount === 1 ? "" : "s"}</span>
+        <span>${isPackFileOverlap ? (conflict.bothActive ? "Active file overlap" : "Potential file overlap") : (conflict.bothActive ? "Active conflict" : "Potential conflict")}</span>
+        <span>${conflict.assetCount} shared ${isPackFileOverlap ? "internal file" : "asset"}${conflict.assetCount === 1 ? "" : "s"}</span>
         ${winner}
+        ${resolutionNote}
         ${duplicate}
       </div>
       <ul>${getConflictAssetLines(conflict)}</ul>
@@ -1055,21 +1281,28 @@ function findModByPayload(payload) {
 
 dropColumns.forEach((column) => {
   column.addEventListener("dragover", (event) => {
-    if (busy || state?.gameRunning) {
+    if (busy || !supports("activation") || state?.gameRunning) {
       return;
     }
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
     column.classList.add("dragOver");
+    showDropIndicator(column.dataset.dropTarget === "active" ? getDropPlacement(event, column) : null);
   });
 
-  column.addEventListener("dragleave", () => {
+  column.addEventListener("dragleave", (event) => {
+    if (event.relatedTarget && column.contains(event.relatedTarget)) {
+      return;
+    }
     column.classList.remove("dragOver");
+    clearDropIndicator();
   });
 
   column.addEventListener("drop", async (event) => {
     event.preventDefault();
+    const placement = column.dataset.dropTarget === "active" ? getDropPlacement(event, column) : null;
     column.classList.remove("dragOver");
+    clearDropIndicator();
     let payload;
     try {
       payload = JSON.parse(event.dataTransfer.getData("application/json"));
@@ -1080,7 +1313,7 @@ dropColumns.forEach((column) => {
     if (!mod) {
       return;
     }
-    await moveMod(mod, column.dataset.dropTarget);
+    await moveMod(mod, column.dataset.dropTarget, placement);
   });
 });
 
@@ -1157,7 +1390,7 @@ async function loadSelectedPreset() {
     return;
   }
   if (state?.gameRunning) {
-    showToast("Close Bellwright before loading a preset.", true);
+    showToast(`Close ${currentGame().label} before loading a preset.`, true);
     return;
   }
 
@@ -1273,6 +1506,9 @@ settingsModalBackdrop.addEventListener("click", (event) => {
 });
 
 folderButton.addEventListener("click", async () => {
+  if (!supports("openModsFolder")) {
+    return;
+  }
   try {
     await window.bellwrightMods.openModsFolder();
   } catch (error) {
@@ -1281,12 +1517,44 @@ folderButton.addEventListener("click", async () => {
 });
 
 launchButton.addEventListener("click", async () => {
+  if (!supports("launch")) {
+    return;
+  }
+  if (state?.gameRunning) {
+    showToast(`${currentGame().label} is already running.`, true);
+    return;
+  }
   try {
     await window.bellwrightMods.launchGame();
-    showToast("Launching Bellwright through Steam.");
+    showToast(currentGame().labels?.launchToast || "Launching game through Steam.");
     setTimeout(loadState, 2500);
   } catch (error) {
     showToast(error.message || String(error), true);
+  }
+});
+
+continueButton.addEventListener("click", async () => {
+  if (!supports("continueFromLastSave")) {
+    return;
+  }
+  const game = currentGame();
+  if (state?.gameRunning) {
+    showToast(`${game.label} is already running.`, true);
+    return;
+  }
+  if (!state?.latestSave) {
+    showToast(`No ${game.label} save files were found.`, true);
+    return;
+  }
+  try {
+    setBusy(true);
+    const result = await window.bellwrightMods.continueGame();
+    showToast(result?.message || game.labels?.continueToast || `Continuing ${state.latestSave.name}.`);
+    setTimeout(loadState, 2500);
+  } catch (error) {
+    showToast(error.message || String(error), true);
+  } finally {
+    setBusy(false);
   }
 });
 
@@ -1317,8 +1585,23 @@ updateButton.addEventListener("click", updateLauncher);
 windowMinimizeButton.addEventListener("click", () => window.bellwrightMods.minimizeWindow());
 windowCloseButton.addEventListener("click", () => window.bellwrightMods.closeWindow());
 windowTitlebar.addEventListener("dblclick", (event) => {
-  if (!event.target.closest(".windowControls")) {
+  if (!event.target.closest(".windowControls, .gameSwitcher")) {
     window.bellwrightMods.toggleMaximizeWindow();
+  }
+});
+
+gameSwitcherButton.addEventListener("click", () => {
+  const isOpen = !gameSwitcherMenu.hidden;
+  gameSwitcherMenu.hidden = isOpen;
+  gameSwitcherButton.setAttribute("aria-expanded", String(!isOpen));
+  if (!isOpen) {
+    gameSwitcherMenu.querySelector("button")?.focus();
+  }
+});
+
+document.addEventListener("click", (event) => {
+  if (!gameSwitcher.contains(event.target)) {
+    closeGameMenu();
   }
 });
 
@@ -1333,6 +1616,11 @@ window.bellwrightMods.onUpdateProgress(showUpdateProgress);
 window.bellwrightMods.onGameRunningChanged(handleGameRunningChanged);
 window.bellwrightMods.onNativeRuntimeChanged(handleNativeRuntimeChanged);
 
-loadAppInfo();
-loadPresets();
-loadState();
+async function initialize() {
+  await loadAppInfo();
+  await loadGames();
+  await loadState();
+  await loadPresets();
+}
+
+void initialize();

@@ -7,6 +7,19 @@ const nodeCrypto = require("node:crypto");
 const https = require("https");
 const zlib = require("zlib");
 const packageInfo = require("./package.json");
+const { DEFAULT_GAME_ID, getGame, isKnownGame, listGames, publicGame } = require("./game-registry");
+const { createGameSelectionStore } = require("./game-selection");
+const { launchWarhammer3, launchWarhammer3Continue } = require("./game-launch");
+const { findLatestWarhammer3Save } = require("./warhammer3-saves");
+const { parseWarhammer3Selection, writeWarhammer3Selection } = require("./warhammer3-selection");
+const { buildWarhammer3PresetSelection } = require("./warhammer3-preset");
+const { createWorkshopThumbnailResolver } = require("./steam-workshop-thumbnails");
+const { createWarhammer3ConflictAnalyzer } = require("./warhammer3-conflicts");
+const {
+  bellwrightLoadOrderToPriorityOrder,
+  bellwrightPriorityOrderToLoadOrder,
+  selectHighestPriorityMod
+} = require("./priority-order");
 const { NativeRuntimeManager } = require("./native-runtime");
 const { applyVariantOption, inspectVariantSettings, normalizeSelectionMap } = require("./variant-settings");
 const {
@@ -16,13 +29,17 @@ const {
   removeUpdateSession
 } = require("./update-cleanup");
 
+const APP_NAME = "ExOne Mod Launcher";
+const APP_USER_DATA_NAME = "bellwright-mod-launcher";
+const APP_USER_MODEL_ID = "ExcelsiorOne.ExOneModLauncher";
 const GAME_APP_ID = "1812450";
+const WARHAMMER3_APP_ID = "1142710";
+const WARHAMMER3_INSTALL_DIRECTORY = "Total War WARHAMMER III";
 const DEFAULT_STEAM_ROOT = path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Steam");
 const DEFAULT_GAME_ROOT = path.join(DEFAULT_STEAM_ROOT, "steamapps", "common", "Bellwright", "Bellwright");
 const DISABLED_FOLDER_NAME = "_disabled_by_bellwright_launcher";
 const LEGACY_DISABLED_FOLDER_NAME = "_disabled_for_runtime_scoped_test";
 const MOD_LOAD_ORDER_FILE = "modloadorder.json";
-const LOAD_ORDER_BASE_PRIORITY = 100000;
 const MAX_CONFLICT_ASSETS = 80;
 const GAME_PROCESS_NAMES = new Set([
   "Bellwright.exe",
@@ -30,17 +47,18 @@ const GAME_PROCESS_NAMES = new Set([
   "BellwrightGame-Win64-Shipping.exe",
   "Bellwright-Win64-Shipping.exe"
 ]);
-const TOOLTIP_WIDTH = 360;
-const TOOLTIP_HEIGHT = 392;
+const TOOLTIP_WIDTH = 380;
+const TOOLTIP_HEIGHT = 568;
 const TOOLTIP_MARGIN = 10;
 const DONATE_URL = "https://ko-fi.com/excelsiorone";
 const DISCORD_URL = "https://discord.gg/Nnqt8S2r7n";
 const GITHUB_OWNER = "sergistarkusa";
 const GITHUB_REPO = "bellwright-mod-launcher";
 const GITHUB_API_BASE = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}`;
-const UPDATE_EXE_NAME = "BellwrightModLauncher.exe";
+const UPDATE_EXE_NAME = "ExOneModLauncher.exe";
 const UPDATE_ASSET_PATTERN = /win-x64-portable\.zip$/i;
 const PRESET_SHARE_PREFIX = "BWL1:";
+const WARHAMMER3_PRESET_SHARE_PREFIX = "EX1W3:";
 const MAX_SHARE_CODE_LENGTH = 100000;
 const MAX_SHARED_PRESET_BYTES = 1024 * 1024;
 const MAX_SHARED_MODS = 500;
@@ -54,8 +72,21 @@ let updateInProgress = false;
 let gameRunningPollTimer = null;
 let gameRunningPollInFlight = false;
 let lastKnownGameRunning = null;
+let lastKnownSelectedGameRunning = null;
 let nativeRuntimeManager = null;
 let keepAliveForGameLaunchUntil = 0;
+let gameSelectionStore = null;
+let selectedGameId = DEFAULT_GAME_ID;
+let workshopThumbnailResolverPromise = null;
+let warhammer3ConflictAnalyzer = null;
+
+// Preserve every existing preset, trust decision, setting, and selected game
+// while changing the visible product name.
+app.setPath("userData", path.join(app.getPath("appData"), APP_USER_DATA_NAME));
+app.setName(APP_NAME);
+if (process.platform === "win32") {
+  app.setAppUserModelId(APP_USER_MODEL_ID);
+}
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -80,7 +111,8 @@ function createWindow() {
     minWidth: 900,
     minHeight: 640,
     backgroundColor: "#101111",
-    title: "Bellwright Mod Launcher",
+    title: APP_NAME,
+    icon: path.join(__dirname, "renderer", "assets", "branding", "exone-lion.png"),
     frame: false,
     hasShadow: true,
     autoHideMenuBar: true,
@@ -246,19 +278,27 @@ async function pollGameRunning() {
   gameRunningPollInFlight = true;
   try {
     const gameProcess = await getGameProcess();
-    const gameRunning = Boolean(gameProcess);
-    if (gameRunning) {
+    const bellwrightRunning = Boolean(gameProcess);
+    const selectedGameRunning =
+      selectedGameId === "warhammer3" ? await getWarhammer3Running() : bellwrightRunning;
+    if (bellwrightRunning) {
       keepAliveForGameLaunchUntil = 0;
     }
-    if (lastKnownGameRunning !== null && gameRunning !== lastKnownGameRunning && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send("mods:gameRunningChanged", gameRunning);
+    if (
+      lastKnownSelectedGameRunning !== null &&
+      selectedGameRunning !== lastKnownSelectedGameRunning &&
+      mainWindow &&
+      !mainWindow.isDestroyed()
+    ) {
+      mainWindow.webContents.send("mods:gameRunningChanged", selectedGameRunning);
     }
-    lastKnownGameRunning = gameRunning;
+    lastKnownSelectedGameRunning = selectedGameRunning;
+    lastKnownGameRunning = bellwrightRunning;
     if (nativeRuntimeManager) {
-      const activeModFolders = gameRunning ? await getActiveModFolders() : [];
+      const activeModFolders = bellwrightRunning ? await getActiveModFolders() : [];
       await nativeRuntimeManager.handleProcess(gameProcess, activeModFolders);
     }
-    if (!gameRunning && !mainWindow && Date.now() >= keepAliveForGameLaunchUntil) {
+    if (!bellwrightRunning && !mainWindow && Date.now() >= keepAliveForGameLaunchUntil) {
       app.quit();
     }
   } catch (error) {
@@ -369,6 +409,11 @@ function scheduleStaleUpdateCleanup(delayMs = 5000, retryAttempt = 0) {
 }
 
 app.whenReady().then(async () => {
+  gameSelectionStore = createGameSelectionStore({
+    filePath: path.join(app.getPath("userData"), "game-selection.json"),
+    fs
+  });
+  selectedGameId = await gameSelectionStore.load();
   nativeRuntimeManager = new NativeRuntimeManager({
     userDataPath: app.getPath("userData"),
     bundledInjectorPath: path.join(__dirname, "runtime", "BellwrightNativeInjector.exe"),
@@ -523,6 +568,32 @@ async function getSteamLibraryRoots() {
   return [...libraries];
 }
 
+async function getWorkshopThumbnailResolver() {
+  if (!workshopThumbnailResolverPromise) {
+    workshopThumbnailResolverPromise = getSteamLibraryRoots().then((steamRoots) =>
+      createWorkshopThumbnailResolver({ fs, steamRoots })
+    );
+  }
+  try {
+    return await workshopThumbnailResolverPromise;
+  } catch (error) {
+    workshopThumbnailResolverPromise = null;
+    throw error;
+  }
+}
+
+async function resolveWorkshopDetails(appId, workshopId, folderPath) {
+  if (!workshopId) {
+    return { title: "", thumbnail: null };
+  }
+  try {
+    const resolver = await getWorkshopThumbnailResolver();
+    return await resolver.resolveDetails({ appId, workshopId, folderPath });
+  } catch {
+    return { title: "", thumbnail: null };
+  }
+}
+
 async function getInstallPaths() {
   if (cachedInstallPaths) {
     return cachedInstallPaths;
@@ -607,11 +678,12 @@ async function describeMod(folderPath, status, sourceRoot = null, options = {}) 
   const modInfo = await readJson(path.join(folderPath, "modinfo.json"));
   const files = await fs.readdir(folderPath).catch(() => []);
   const packageFiles = files.filter((file) => /\.(pak|sig|ucas|utoc)$/i.test(file));
-  const title = modInfo?.title || modInfo?.folderName || folderName;
   const displayFolderName = modInfo?.folderName || folderName;
   const modName = modInfo?.folderName || folderName;
   const steamId = normalizeSteamId(modInfo?.steamId || options.workshopId || 0);
   const workshopId = options.workshopId || (steamId ? String(steamId) : null);
+  const workshopDetails = await resolveWorkshopDetails(GAME_APP_ID, workshopId, folderPath);
+  const title = modInfo?.title || workshopDetails.title || modInfo?.folderName || folderName;
   const assetsToCook = getObjectKeys(modInfo?.assetsToCook);
   const version = modInfo?.version
     ? [modInfo.version.Main, modInfo.version.Major, modInfo.version.Minor, modInfo.version.Micro]
@@ -665,6 +737,7 @@ async function describeMod(folderPath, status, sourceRoot = null, options = {}) 
     nativeRuntime,
     launcherSettings,
     launcherSettingsError,
+    thumbnail: workshopDetails.thumbnail,
     path: folderPath
   };
 }
@@ -735,12 +808,15 @@ function modLoadOrderEntryFromMod(mod) {
 async function readModLoadOrder() {
   const store = (await readJson(getModLoadOrderPath())) || {};
   const entries = Array.isArray(store.modLoadOrder) ? store.modLoadOrder : [];
-  return entries
+  const gameLoadOrder = entries
     .filter((entry) => entry && typeof entry.name === "string" && entry.name.trim())
     .map((entry) => ({
       name: entry.name.trim(),
       steamId: normalizeSteamId(entry.steamId)
     }));
+  // Bellwright assigns higher engine priority to later array entries. ExOne
+  // presents the inverse so visible item #1 is the highest-priority mod.
+  return bellwrightLoadOrderToPriorityOrder(gameLoadOrder);
 }
 
 async function writeModLoadOrder(entries) {
@@ -763,7 +839,8 @@ async function writeModLoadOrder(entries) {
   }
   const filePath = getModLoadOrderPath();
   await ensureDirectory(path.dirname(filePath));
-  await fs.writeFile(filePath, `${JSON.stringify({ modLoadOrder: cleanEntries }, null, "\t")}\n`, "utf8");
+  const gameLoadOrder = bellwrightPriorityOrderToLoadOrder(cleanEntries);
+  await fs.writeFile(filePath, `${JSON.stringify({ modLoadOrder: gameLoadOrder }, null, "\t")}\n`, "utf8");
 }
 
 function loadOrderEntriesEqual(left, right) {
@@ -928,12 +1005,7 @@ function buildModConflicts(mods) {
 
       const bothActive = left.status === "active" && right.status === "active";
       const severity = getConflictSeverity(left, right, sharedAssets);
-      const winner =
-        bothActive && Number.isFinite(left.loadOrderIndex) && Number.isFinite(right.loadOrderIndex)
-          ? left.loadOrderIndex > right.loadOrderIndex
-            ? left
-            : right
-          : null;
+      const winner = bothActive ? selectHighestPriorityMod(left, right) : null;
       const conflict = {
         id: `${modKey(left)}|${modKey(right)}`,
         severity,
@@ -1029,7 +1101,7 @@ async function migrateLegacyDisabledLocalMods(installPaths) {
   }
 }
 
-async function getState() {
+async function getBellwrightState() {
   const installPaths = await getInstallPaths();
   const { gameRoot, modsRoot, workshopRoot, disabledRoot, workshopDisabledRoot, legacyDisabledRoot, legacyRuntimeDisabledRoot } =
     installPaths;
@@ -1119,7 +1191,7 @@ async function getState() {
   for (const mod of activeStateMods) {
     const loadOrderIndex = loadOrderMap.get(modLoadOrderKeyFromMod(mod));
     mod.loadOrderIndex = Number.isInteger(loadOrderIndex) ? loadOrderIndex : null;
-    mod.priority = Number.isInteger(loadOrderIndex) ? LOAD_ORDER_BASE_PRIORITY + loadOrderIndex : null;
+    mod.priority = Number.isInteger(loadOrderIndex) ? loadOrderIndex + 1 : null;
   }
   for (const mod of disabledMods) {
     mod.loadOrderIndex = null;
@@ -1165,6 +1237,250 @@ async function getState() {
   };
 }
 
+function titleFromPackName(packName) {
+  const baseName = path.basename(packName, path.extname(packName))
+    .replace(/^[!@#_\-\s]+/, "")
+    .replace(/[_\-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!baseName) {
+    return packName;
+  }
+  return baseName.replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+async function getWarhammer3Paths() {
+  const steamLibraries = await getSteamLibraryRoots();
+  let gameRoot = path.join(DEFAULT_STEAM_ROOT, "steamapps", "common", WARHAMMER3_INSTALL_DIRECTORY);
+  let workshopRoot = path.join(DEFAULT_STEAM_ROOT, "steamapps", "workshop", "content", WARHAMMER3_APP_ID);
+
+  for (const libraryRoot of steamLibraries) {
+    const candidateGameRoot = path.join(libraryRoot, "steamapps", "common", WARHAMMER3_INSTALL_DIRECTORY);
+    if (await exists(path.join(candidateGameRoot, "Warhammer3.exe"))) {
+      gameRoot = candidateGameRoot;
+      break;
+    }
+  }
+  for (const libraryRoot of steamLibraries) {
+    const candidateWorkshopRoot = path.join(libraryRoot, "steamapps", "workshop", "content", WARHAMMER3_APP_ID);
+    if (await exists(candidateWorkshopRoot)) {
+      workshopRoot = candidateWorkshopRoot;
+      break;
+    }
+  }
+
+  return {
+    gameRoot,
+    dataRoot: path.join(gameRoot, "data"),
+    workshopRoot,
+    usedModsPath: path.join(gameRoot, "used_mods.txt")
+  };
+}
+
+async function readWarhammer3Selection(usedModsPath) {
+  const text = await fs.readFile(usedModsPath, "utf8").catch(() => "");
+  const { packOrder, workingDirectories } = parseWarhammer3Selection(text);
+  return {
+    packOrder,
+    packIndex: new Map(packOrder.map((packName, index) => [packName.toLowerCase(), index])),
+    workingDirectoryIndex: new Map(workingDirectories.map((directory, index) => [directory.toLowerCase(), index]))
+  };
+}
+
+function createWarhammer3Mod({
+  folderName,
+  folderPath,
+  packFiles,
+  displayPackFiles = packFiles,
+  status,
+  source,
+  workshopId = null,
+  loadOrderIndex = null,
+  thumbnail = null,
+  workshopTitle = ""
+}) {
+  const preferredPack = packFiles.find((packName) => packName) || displayPackFiles.find((packName) => packName) || folderName;
+  const packSummary = displayPackFiles.length > 1 ? `${displayPackFiles.length} pack files` : preferredPack;
+  return {
+    folderName,
+    displayFolderName: packSummary,
+    modName: preferredPack,
+    title: workshopTitle || titleFromPackName(preferredPack),
+    description:
+      source === "workshop"
+        ? `Steam Workshop item ${workshopId}. Discovered in place without moving files.`
+        : "Selected local data pack discovered through used_mods.txt.",
+    author: "Unknown",
+    tag: source === "workshop" ? "Steam Workshop" : "Local pack",
+    version: "",
+    status,
+    sourceRoot: source === "workshop" ? path.dirname(folderPath) : path.dirname(folderPath),
+    source,
+    sourceLabel: source === "workshop" ? "Steam Workshop (managed in place)" : "Local data pack (order only)",
+    steamId: workshopId ? Number(workshopId) : 0,
+    workshopId,
+    activeFlag: null,
+    packFiles: [...packFiles],
+    availablePackFiles: [...displayPackFiles],
+    packageCount: displayPackFiles.length,
+    hasModInfo: false,
+    modDependencies: [],
+    assetsToCook: [],
+    createdAssets: [],
+    modifiedAssets: [],
+    deletedAssets: [],
+    referencingAssets: [],
+    referencingAssetsToNotCook: [],
+    assetHashes: {},
+    modHash: null,
+    modKitVersion: null,
+    gameVersion: null,
+    enforceSameMods: "",
+    nativeRuntime: null,
+    launcherSettings: null,
+    launcherSettingsError: null,
+    thumbnail,
+    loadOrderIndex,
+    priority: Number.isInteger(loadOrderIndex) ? loadOrderIndex + 1 : null,
+    activeConflictCount: 0,
+    conflictCount: 0,
+    conflictSeverity: null,
+    path: folderPath
+  };
+}
+
+async function getWarhammer3Running() {
+  const output = await execFileText("powershell", [
+    "-NoProfile",
+    "-Command",
+    "if(Get-Process -Name 'Warhammer3' -ErrorAction SilentlyContinue){'1'}"
+  ]);
+  return output.trim() === "1";
+}
+
+async function getWarhammer3State(game) {
+  const { gameRoot, dataRoot, workshopRoot, usedModsPath } = await getWarhammer3Paths();
+  const gameRunning = await getWarhammer3Running();
+  const latestSave = await findLatestWarhammer3Save({ fs, appDataPath: app.getPath("appData") });
+  const selection = await readWarhammer3Selection(usedModsPath);
+  const discoveredPackNames = new Set();
+  const mods = [];
+
+  for (const folderName of await listDirectories(workshopRoot)) {
+    const folderPath = path.join(workshopRoot, folderName);
+    const files = await fs.readdir(folderPath, { withFileTypes: true }).catch(() => []);
+    const packFiles = files.filter((entry) => entry.isFile() && /\.pack$/i.test(entry.name)).map((entry) => entry.name);
+    if (!packFiles.length) {
+      continue;
+    }
+    packFiles.forEach((packName) => discoveredPackNames.add(packName.toLowerCase()));
+    const packIndexes = packFiles
+      .map((packName) => selection.packIndex.get(packName.toLowerCase()))
+      .filter(Number.isInteger);
+    const workingDirectoryIndex = selection.workingDirectoryIndex.get(path.normalize(folderPath).toLowerCase());
+    const selected = packIndexes.length > 0 || Number.isInteger(workingDirectoryIndex);
+    const selectedPackFiles = packFiles
+      .filter((packName) => selection.packIndex.has(packName.toLowerCase()))
+      .sort(
+        (left, right) =>
+          selection.packIndex.get(left.toLowerCase()) - selection.packIndex.get(right.toLowerCase())
+      );
+    const loadOrderIndex = packIndexes.length
+      ? Math.min(...packIndexes)
+      : Number.isInteger(workingDirectoryIndex)
+        ? workingDirectoryIndex
+        : null;
+    const workshopDetails = await resolveWorkshopDetails(WARHAMMER3_APP_ID, folderName, folderPath);
+    mods.push(
+      createWarhammer3Mod({
+        folderName,
+        folderPath,
+        packFiles: selected ? selectedPackFiles : [...packFiles].sort((left, right) => left.localeCompare(right)),
+        displayPackFiles: packFiles,
+        status: selected ? "active" : "disabled",
+        source: "workshop",
+        workshopId: folderName,
+        loadOrderIndex,
+        thumbnail: workshopDetails.thumbnail,
+        workshopTitle: workshopDetails.title
+      })
+    );
+  }
+
+  for (const [loadOrderIndex, packName] of selection.packOrder.entries()) {
+    if (discoveredPackNames.has(packName.toLowerCase())) {
+      continue;
+    }
+    mods.push(
+      createWarhammer3Mod({
+        folderName: `data-${packName}`,
+        folderPath: path.join(dataRoot, packName),
+        packFiles: [packName],
+        status: "active",
+        source: "local",
+        loadOrderIndex
+      })
+    );
+  }
+
+  mods.sort((left, right) => {
+    if (left.status !== right.status) {
+      return left.status === "active" ? -1 : 1;
+    }
+    if (left.status === "active") {
+      return (left.loadOrderIndex ?? Number.MAX_SAFE_INTEGER) - (right.loadOrderIndex ?? Number.MAX_SAFE_INTEGER);
+    }
+    return left.title.localeCompare(right.title, undefined, { sensitivity: "base" });
+  });
+
+  if (!warhammer3ConflictAnalyzer) {
+    warhammer3ConflictAnalyzer = createWarhammer3ConflictAnalyzer({ fs });
+  }
+  const conflictResult = await warhammer3ConflictAnalyzer.analyze(mods);
+  const selectedCount = mods.filter((mod) => mod.status === "active").length;
+  return {
+    game: publicGame(game),
+    gameRoot,
+    modsRoot: dataRoot,
+    workshopRoot,
+    disabledRoot: null,
+    workshopDisabledRoot: null,
+    modLoadOrderPath: usedModsPath,
+    appId: WARHAMMER3_APP_ID,
+    gameRunning,
+    latestSave,
+    nativeRuntime: { phase: "idle", label: "Not applicable", message: game.runtimeMessage, loaded: 0, total: 0, mods: [] },
+    mods,
+    conflicts: conflictResult.conflicts,
+    activeConflictCount: conflictResult.activeConflictCount,
+    conflictAnalysis: conflictResult.analysis,
+    pathSummary: `Workshop: ${workshopRoot} | ${selectedCount} selected through used_mods.txt | ${conflictResult.analysis.scannedPacks} pack indexes checked read-only | Workshop files stay in place`
+  };
+}
+
+async function getState() {
+  const game = getGame(selectedGameId);
+  if (game.id !== "bellwright") {
+    return getWarhammer3State(game);
+  }
+  return { ...(await getBellwrightState()), game: publicGame(game) };
+}
+
+function assertBellwrightSelected() {
+  if (selectedGameId !== "bellwright") {
+    throw new Error("This action is available only for Bellwright.");
+  }
+}
+
+async function setSelectedGame(gameId) {
+  if (!isKnownGame(gameId)) {
+    throw new Error("Unknown game selection.");
+  }
+  selectedGameId = gameSelectionStore ? await gameSelectionStore.set(gameId) : gameId;
+  lastKnownSelectedGameRunning = null;
+  return getState();
+}
+
 function assertSafeModName(folderName) {
   if (!folderName || folderName.includes("\\") || folderName.includes("/") || folderName === "." || folderName === "..") {
     throw new Error("Unsafe mod folder name.");
@@ -1187,6 +1503,92 @@ async function assertGameClosed() {
   if (await getGameRunning()) {
     throw new Error("Close Bellwright before changing enabled mods.");
   }
+}
+
+async function assertWarhammer3Closed() {
+  if (await getWarhammer3Running()) {
+    throw new Error("Close Total War: WARHAMMER III before changing mods.");
+  }
+}
+
+async function getWarhammer3ModUpdateContext() {
+  await assertWarhammer3Closed();
+  const state = await getWarhammer3State(getGame("warhammer3"));
+  return {
+    state,
+    usedModsPath: state.modLoadOrderPath,
+    activeMods: state.mods.filter((mod) => mod.status === "active")
+  };
+}
+
+async function writeWarhammer3Mods(usedModsPath, mods) {
+  await writeWarhammer3Selection({ fs, filePath: usedModsPath, mods });
+  return getWarhammer3State(getGame("warhammer3"));
+}
+
+async function enableWarhammer3Mod(payload) {
+  const folderName = String(payload?.folderName || "");
+  assertSafeModName(folderName);
+  const { state, usedModsPath, activeMods } = await getWarhammer3ModUpdateContext();
+  const mod = state.mods.find(
+    (candidate) => candidate.source === "workshop" && candidate.folderName === folderName
+  );
+  if (!mod) {
+    throw new Error("The Workshop mod was not found.");
+  }
+  if (mod.status === "active") {
+    return state;
+  }
+  return writeWarhammer3Mods(usedModsPath, [...activeMods, mod]);
+}
+
+async function disableWarhammer3Mod(payload) {
+  const folderName = typeof payload === "string" ? payload : String(payload?.folderName || "");
+  const source = typeof payload === "string" ? "workshop" : payload?.source || "workshop";
+  assertSafeModName(folderName);
+  if (source !== "workshop") {
+    throw new Error("Local data packs stay selected because the launcher cannot safely rediscover them after removal.");
+  }
+  const { state, usedModsPath, activeMods } = await getWarhammer3ModUpdateContext();
+  const mod = state.mods.find(
+    (candidate) => candidate.source === "workshop" && candidate.folderName === folderName
+  );
+  if (!mod) {
+    throw new Error("The Workshop mod was not found.");
+  }
+  if (mod.status !== "active") {
+    return state;
+  }
+  return writeWarhammer3Mods(
+    usedModsPath,
+    activeMods.filter((candidate) => modKey(candidate) !== modKey(mod))
+  );
+}
+
+async function setWarhammer3LoadOrder(payload) {
+  const requestedKeys = Array.isArray(payload) ? payload : payload?.keys;
+  if (!Array.isArray(requestedKeys)) {
+    throw new Error("Load order update is missing mod keys.");
+  }
+  const { state, usedModsPath, activeMods } = await getWarhammer3ModUpdateContext();
+  const modsByKey = new Map(activeMods.map((mod) => [modKey(mod), mod]));
+  const seen = new Set();
+  const orderedMods = [];
+
+  for (const key of requestedKeys) {
+    const mod = modsByKey.get(String(key));
+    if (!mod || seen.has(modKey(mod))) {
+      continue;
+    }
+    orderedMods.push(mod);
+    seen.add(modKey(mod));
+  }
+  for (const mod of activeMods) {
+    if (!seen.has(modKey(mod))) {
+      orderedMods.push(mod);
+    }
+  }
+  return writeWarhammer3Mods(usedModsPath, orderedMods);
 }
 
 async function moveDirectory(source, target, installPaths) {
@@ -1521,6 +1923,7 @@ function publicPreset(preset) {
   return {
     id: preset.id,
     name: preset.name,
+    gameId: preset.gameId || DEFAULT_GAME_ID,
     createdAt: preset.createdAt,
     updatedAt: preset.updatedAt,
     activeCount: preset.activeMods.length,
@@ -1539,6 +1942,12 @@ function cleanSharedText(value, fallback, maxLength = 160) {
 
 function normalizeSharedPresetMod(mod) {
   const source = mod?.source === "workshop" ? "workshop" : "local";
+  const packFiles = Array.isArray(mod?.packFiles)
+    ? mod.packFiles
+        .map((packName) => path.basename(String(packName || "")))
+        .filter((packName) => /\.pack$/i.test(packName))
+        .slice(0, 32)
+    : [];
   if (source === "workshop") {
     const steamId = normalizeSteamId(mod?.steamId || mod?.workshopId || mod?.folderName);
     if (!steamId) {
@@ -1554,6 +1963,7 @@ function normalizeSharedPresetMod(mod) {
       title: cleanSharedText(mod?.title, modName),
       steamId,
       workshopId: folderName,
+      packFiles,
       settings: normalizeSelectionMap(mod?.settings)
     };
   }
@@ -1569,13 +1979,23 @@ function normalizeSharedPresetMod(mod) {
     title: cleanSharedText(mod?.title, modName),
     steamId: 0,
     workshopId: null,
+    packFiles,
     settings: normalizeSelectionMap(mod?.settings)
   };
 }
 
 function normalizeSharedPresetPayload(payload) {
-  if (!payload || payload.format !== 1 || String(payload.gameAppId) !== GAME_APP_ID) {
-    throw new Error("This is not a supported Bellwright preset code.");
+  if (!payload || payload.format !== 1) {
+    throw new Error("This is not a supported ExOne preset code.");
+  }
+  const gameId =
+    String(payload.gameAppId) === GAME_APP_ID
+      ? "bellwright"
+      : String(payload.gameAppId) === WARHAMMER3_APP_ID
+        ? "warhammer3"
+        : null;
+  if (!gameId) {
+    throw new Error("This preset belongs to an unsupported game.");
   }
   if (!Array.isArray(payload.mods) || payload.mods.length > MAX_SHARED_MODS) {
     throw new Error("Shared preset has an invalid mod list.");
@@ -1594,35 +2014,56 @@ function normalizeSharedPresetPayload(payload) {
   }
 
   return {
+    gameId,
     name: cleanSharedText(payload.name, "Shared preset", 80),
     activeMods
   };
 }
 
 function encodePresetShareCode(preset) {
+  const gameId = preset.gameId || DEFAULT_GAME_ID;
+  const gameAppId = gameId === "warhammer3" ? WARHAMMER3_APP_ID : GAME_APP_ID;
+  const prefix = gameId === "warhammer3" ? WARHAMMER3_PRESET_SHARE_PREFIX : PRESET_SHARE_PREFIX;
   const payload = {
     format: 1,
-    gameAppId: GAME_APP_ID,
+    gameAppId,
     name: preset.name,
     createdAt: new Date().toISOString(),
     mods: preset.activeMods.map(normalizeSharedPresetMod)
   };
   const compressed = zlib.deflateRawSync(Buffer.from(JSON.stringify(payload), "utf8"), { level: 9 });
-  return `${PRESET_SHARE_PREFIX}${compressed.toString("base64url")}`;
+  return `${prefix}${compressed.toString("base64url")}`;
 }
 
 function decodePresetShareCode(value) {
   const code = String(value || "").replace(/\s+/g, "");
-  if (!code.startsWith(PRESET_SHARE_PREFIX) || code.length > MAX_SHARE_CODE_LENGTH) {
-    throw new Error("Invalid Bellwright preset code.");
+  const prefix = code.startsWith(PRESET_SHARE_PREFIX)
+    ? PRESET_SHARE_PREFIX
+    : code.startsWith(WARHAMMER3_PRESET_SHARE_PREFIX)
+      ? WARHAMMER3_PRESET_SHARE_PREFIX
+      : null;
+  if (!prefix || code.length > MAX_SHARE_CODE_LENGTH) {
+    throw new Error("Invalid ExOne preset code.");
   }
 
   try {
-    const compressed = Buffer.from(code.slice(PRESET_SHARE_PREFIX.length), "base64url");
+    const compressed = Buffer.from(code.slice(prefix.length), "base64url");
     const decoded = zlib.inflateRawSync(compressed, { maxOutputLength: MAX_SHARED_PRESET_BYTES });
-    return normalizeSharedPresetPayload(JSON.parse(decoded.toString("utf8")));
+    const preset = normalizeSharedPresetPayload(JSON.parse(decoded.toString("utf8")));
+    if (
+      (prefix === PRESET_SHARE_PREFIX && preset.gameId !== "bellwright") ||
+      (prefix === WARHAMMER3_PRESET_SHARE_PREFIX && preset.gameId !== "warhammer3")
+    ) {
+      throw new Error("Preset code prefix does not match its game.");
+    }
+    return preset;
   } catch (error) {
-    if (error?.message?.startsWith("Shared preset") || error?.message?.startsWith("This is not")) {
+    if (
+      error?.message?.startsWith("Shared preset") ||
+      error?.message?.startsWith("This is not") ||
+      error?.message?.startsWith("This preset") ||
+      error?.message?.startsWith("Preset code prefix")
+    ) {
       throw error;
     }
     throw new Error("Preset code is damaged or unsupported.");
@@ -1631,7 +2072,9 @@ function decodePresetShareCode(value) {
 
 async function copyPresetShareCode(id) {
   const store = await readPresetStore();
-  const preset = store.presets.find((candidate) => candidate.id === id);
+  const preset = store.presets.find(
+    (candidate) => candidate.id === id && candidate.gameId === selectedGameId
+  );
   if (!preset) {
     throw new Error("Select a preset to share.");
   }
@@ -1642,6 +2085,9 @@ async function copyPresetShareCode(id) {
 
 async function inspectPresetShareCode(code) {
   const sharedPreset = decodePresetShareCode(code);
+  if (sharedPreset.gameId !== selectedGameId) {
+    throw new Error(`Switch to ${getGame(sharedPreset.gameId).label} before importing this preset.`);
+  }
   const state = await getState();
   const installedByKey = new Map(state.mods.map((mod) => [modKey(mod), mod]));
   const mods = sharedPreset.activeMods.map((sharedMod, index) => {
@@ -1658,6 +2104,7 @@ async function inspectPresetShareCode(code) {
   });
 
   return {
+    gameId: sharedPreset.gameId,
     name: sharedPreset.name,
     activeCount: mods.length,
     installedCount: mods.filter((mod) => mod.installed).length,
@@ -1685,11 +2132,18 @@ function getUniqueImportedPresetName(name, presets) {
 
 async function importPresetShareCode(code) {
   const sharedPreset = decodePresetShareCode(code);
+  if (sharedPreset.gameId !== selectedGameId) {
+    throw new Error(`Switch to ${getGame(sharedPreset.gameId).label} before importing this preset.`);
+  }
   const store = await readPresetStore();
   const now = new Date().toISOString();
   const preset = {
     id: createPresetId(sharedPreset.name),
-    name: getUniqueImportedPresetName(sharedPreset.name, store.presets),
+    name: getUniqueImportedPresetName(
+      sharedPreset.name,
+      store.presets.filter((candidate) => candidate.gameId === sharedPreset.gameId)
+    ),
+    gameId: sharedPreset.gameId,
     createdAt: now,
     updatedAt: now,
     activeMods: sharedPreset.activeMods
@@ -1706,12 +2160,13 @@ async function readPresetStore() {
   const store = (await readJson(getPresetPath())) || {};
   const presets = Array.isArray(store.presets) ? store.presets : [];
   return {
-    version: 1,
+    version: 2,
     presets: presets
       .filter((preset) => preset && preset.id && preset.name && Array.isArray(preset.activeMods))
       .map((preset) => ({
         id: String(preset.id),
         name: String(preset.name),
+        gameId: isKnownGame(preset.gameId) ? preset.gameId : DEFAULT_GAME_ID,
         createdAt: preset.createdAt || new Date().toISOString(),
         updatedAt: preset.updatedAt || preset.createdAt || new Date().toISOString(),
         activeMods: preset.activeMods
@@ -1724,6 +2179,9 @@ async function readPresetStore() {
             title: mod.title || mod.displayFolderName || mod.folderName,
             steamId: normalizeSteamId(mod.steamId || mod.workshopId || 0),
             workshopId: mod.workshopId || (mod.steamId ? String(mod.steamId) : null),
+            packFiles: Array.isArray(mod.packFiles)
+              ? mod.packFiles.map((packName) => path.basename(String(packName))).filter((packName) => /\.pack$/i.test(packName))
+              : [],
             settings: normalizeSelectionMap(mod.settings)
           }))
       }))
@@ -1738,6 +2196,7 @@ async function writePresetStore(store) {
 async function listPresets() {
   const store = await readPresetStore();
   return store.presets
+    .filter((preset) => preset.gameId === selectedGameId)
     .map(publicPreset)
     .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
 }
@@ -1761,13 +2220,17 @@ async function savePreset(payload) {
       title: mod.title,
       steamId: mod.steamId || 0,
       workshopId: mod.workshopId || null,
+      packFiles: [...(mod.packFiles || [])],
       settings: settingsFromMod(mod)
     }));
 
-  const existing = store.presets.find((preset) => preset.name.toLowerCase() === name.toLowerCase());
+  const existing = store.presets.find(
+    (preset) => preset.gameId === selectedGameId && preset.name.toLowerCase() === name.toLowerCase()
+  );
   const preset = {
     id: existing?.id || createPresetId(name),
     name,
+    gameId: selectedGameId,
     createdAt: existing?.createdAt || now,
     updatedAt: now,
     activeMods
@@ -1789,7 +2252,9 @@ async function savePreset(payload) {
 async function deletePreset(id) {
   const store = await readPresetStore();
   const before = store.presets.length;
-  store.presets = store.presets.filter((preset) => preset.id !== id);
+  store.presets = store.presets.filter(
+    (preset) => preset.id !== id || preset.gameId !== selectedGameId
+  );
   if (store.presets.length === before) {
     throw new Error("Preset was not found.");
   }
@@ -1797,31 +2262,65 @@ async function deletePreset(id) {
   return listPresets();
 }
 
+function missingPresetModsMessage(missing) {
+  const workshopCount = missing.filter((mod) => mod.source === "workshop").length;
+  const localCount = missing.length - workshopCount;
+  const parts = [];
+  if (workshopCount) {
+    parts.push(`${workshopCount} Workshop mod${workshopCount === 1 ? "" : "s"}`);
+  }
+  if (localCount) {
+    parts.push(`${localCount} local mod${localCount === 1 ? "" : "s"}`);
+  }
+  return `${parts.join(" and ")} ${missing.length === 1 ? "is" : "are"} missing. Install ${
+    missing.length === 1 ? "it" : "them"
+  } before loading this preset.`;
+}
+
+async function loadWarhammer3Preset(preset) {
+  await assertWarhammer3Closed();
+  const currentState = await getWarhammer3State(getGame("warhammer3"));
+  const { missing, desiredMods, changed, orderChanged } = buildWarhammer3PresetSelection(
+    currentState,
+    preset
+  );
+  if (missing.length) {
+    throw new Error(missingPresetModsMessage(missing));
+  }
+
+  const state = changed || orderChanged
+    ? await writeWarhammer3Mods(currentState.modLoadOrderPath, desiredMods)
+    : currentState;
+
+  return {
+    preset: publicPreset(preset),
+    state,
+    changed,
+    settingsChanged: 0,
+    orderChanged,
+    missing: []
+  };
+}
+
 async function loadPreset(id) {
-  await assertGameClosed();
   const store = await readPresetStore();
-  const preset = store.presets.find((candidate) => candidate.id === id);
+  const preset = store.presets.find(
+    (candidate) => candidate.id === id && candidate.gameId === selectedGameId
+  );
   if (!preset) {
     throw new Error("Preset was not found.");
   }
+  if (selectedGameId === "warhammer3") {
+    return loadWarhammer3Preset(preset);
+  }
+  await assertGameClosed();
 
   let currentState = await getState();
   const targetKeys = new Set(preset.activeMods.map(modKey));
   const currentKeys = new Set(currentState.mods.map(modKey));
   const missing = preset.activeMods.filter((savedMod) => !currentKeys.has(modKey(savedMod)));
   if (missing.length) {
-    const workshopCount = missing.filter((mod) => mod.source === "workshop").length;
-    const localCount = missing.length - workshopCount;
-    const parts = [];
-    if (workshopCount) {
-      parts.push(`${workshopCount} Workshop mod${workshopCount === 1 ? "" : "s"}`);
-    }
-    if (localCount) {
-      parts.push(`${localCount} local mod${localCount === 1 ? "" : "s"}`);
-    }
-    throw new Error(
-      `${parts.join(" and ")} ${missing.length === 1 ? "is" : "are"} missing. Install ${missing.length === 1 ? "it" : "them"} before loading this preset.`
-    );
+    throw new Error(missingPresetModsMessage(missing));
   }
   let changed = 0;
 
@@ -2126,7 +2625,7 @@ async function findStagedAppRoot(extractedRoot) {
       return candidate;
     }
   }
-  throw new Error("The downloaded ZIP does not contain a valid BellwrightModLauncher.exe package.");
+  throw new Error(`The downloaded ZIP does not contain a valid ${UPDATE_EXE_NAME} package.`);
 }
 
 function getInstallDirectory() {
@@ -2228,7 +2727,7 @@ async function updateLauncher() {
 
     const updateSession = `${latestVersion}-${Date.now()}-${nodeCrypto.randomBytes(4).toString("hex")}`;
     updateRoot = path.join(app.getPath("userData"), "updates", updateSession);
-    const zipPath = path.join(updateRoot, asset.name || `BellwrightModLauncher-v${latestVersion}.zip`);
+    const zipPath = path.join(updateRoot, asset.name || `ExOneModLauncher-v${latestVersion}.zip`);
     const extractedRoot = path.join(updateRoot, "extracted");
     await ensureDirectory(updateRoot);
 
@@ -2250,7 +2749,7 @@ async function updateLauncher() {
       cancelId: 1,
       title: "Restart to apply update",
       message: "Update downloaded. Restart to apply update?",
-      detail: `Bellwright Mod Launcher v${latestVersion} is ready.`
+      detail: `${APP_NAME} v${latestVersion} is ready.`
     });
 
     if (choice.response === 0) {
@@ -2274,6 +2773,7 @@ async function updateLauncher() {
 
 function getAppInfo() {
   return {
+    appName: APP_NAME,
     maker: "ExcelsiorOne",
     version: packageInfo.version,
     donateUrl: DONATE_URL,
@@ -2284,6 +2784,8 @@ function getAppInfo() {
 }
 
 ipcMain.handle("mods:getState", getState);
+ipcMain.handle("games:list", async () => listGames().map(publicGame));
+ipcMain.handle("games:select", async (_event, gameId) => setSelectedGame(gameId));
 
 ipcMain.on("window:minimize", (event) => {
   BrowserWindow.fromWebContents(event.sender)?.minimize();
@@ -2344,18 +2846,31 @@ ipcMain.handle("app:updateLauncher", async () => {
 });
 
 ipcMain.handle("mods:disable", async (_event, payload) => {
+  if (selectedGameId === "warhammer3") {
+    return disableWarhammer3Mod(payload);
+  }
+  assertBellwrightSelected();
   return disableMod(payload);
 });
 
 ipcMain.handle("mods:enable", async (_event, payload) => {
+  if (selectedGameId === "warhammer3") {
+    return enableWarhammer3Mod(payload);
+  }
+  assertBellwrightSelected();
   return enableMod(payload);
 });
 
 ipcMain.handle("mods:setLoadOrder", async (_event, payload) => {
+  if (selectedGameId === "warhammer3") {
+    return setWarhammer3LoadOrder(payload);
+  }
+  assertBellwrightSelected();
   return setLoadOrder(payload);
 });
 
 ipcMain.handle("mods:setVariant", async (_event, payload) => {
+  assertBellwrightSelected();
   return setModVariant(payload);
 });
 
@@ -2369,12 +2884,46 @@ ipcMain.handle("mods:hideTooltip", async () => {
 });
 
 ipcMain.handle("mods:openModsFolder", async () => {
+  if (selectedGameId === "warhammer3") {
+    const { dataRoot, workshopRoot } = await getWarhammer3Paths();
+    const target = (await exists(workshopRoot)) ? workshopRoot : dataRoot;
+    const error = await shell.openPath(target);
+    if (error) {
+      throw new Error(error);
+    }
+    return target;
+  }
+  assertBellwrightSelected();
   const { modsRoot } = await getInstallPaths();
   await ensureDirectory(modsRoot);
-  await shell.openPath(modsRoot);
+  const error = await shell.openPath(modsRoot);
+  if (error) {
+    throw new Error(error);
+  }
+  return modsRoot;
 });
 
-ipcMain.handle("mods:launchGame", async () => {
+async function prepareWarhammer3Launch() {
+  if (await getWarhammer3Running()) {
+    throw new Error("Total War: WARHAMMER III is already running.");
+  }
+  const { gameRoot, usedModsPath } = await getWarhammer3Paths();
+  if (!(await exists(path.join(gameRoot, "Warhammer3.exe")))) {
+    throw new Error("Warhammer3.exe was not found in the detected Steam library.");
+  }
+  if (!(await exists(usedModsPath))) {
+    await fs.writeFile(usedModsPath, "", { flag: "a" });
+  }
+  return { gameRoot, usedModsPath };
+}
+
+async function launchWarhammer3SelectedGame() {
+  const { gameRoot } = await prepareWarhammer3Launch();
+  return launchWarhammer3({ childProcess, fs, gameRoot });
+}
+
+async function launchBellwrightSelectedGame() {
+  assertBellwrightSelected();
   await applySavedVariantSelections();
   const currentState = await getState();
   for (const mod of currentState.mods.filter((candidate) => candidate.status === "active" && candidate.nativeRuntime)) {
@@ -2385,6 +2934,38 @@ ipcMain.handle("mods:launchGame", async () => {
   keepAliveForGameLaunchUntil = Date.now() + 120000;
   await shell.openExternal(`steam://rungameid/${GAME_APP_ID}`);
   return true;
+}
+
+async function launchSelectedGame() {
+  if (selectedGameId === "warhammer3") {
+    return launchWarhammer3SelectedGame();
+  }
+  return launchBellwrightSelectedGame();
+}
+
+ipcMain.handle("mods:launchGame", async () => {
+  return launchSelectedGame();
+});
+
+ipcMain.handle("mods:continueGame", async () => {
+  if (selectedGameId !== "warhammer3") {
+    throw new Error("Continue from last save is currently supported only for Total War: WARHAMMER III.");
+  }
+  const latestSave = await findLatestWarhammer3Save({ fs, appDataPath: app.getPath("appData") });
+  if (!latestSave) {
+    throw new Error("No WARHAMMER III save files were found.");
+  }
+  const { gameRoot } = await prepareWarhammer3Launch();
+  await fs.access(latestSave.path);
+  await launchWarhammer3Continue({ childProcess, fs, gameRoot, saveName: latestSave.name });
+  return {
+    launched: true,
+    directResume: true,
+    gameId: "warhammer3",
+    saveName: latestSave.name,
+    savePath: latestSave.path,
+    message: `Continuing ${latestSave.name} with the selected mods.`
+  };
 });
 
 ipcMain.handle("mods:openWorkshopItem", async (_event, workshopId) => {

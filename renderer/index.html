@@ -3,17 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Bellwright Mod Launcher</title>
+    <title>ExOne Mod Launcher</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <header id="windowTitlebar" class="windowTitlebar">
       <div class="windowIdentity">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M12 2 4 6v6c0 5.1 3.4 8.7 8 10 4.6-1.3 8-4.9 8-10V6l-8-4Z" />
-          <path d="M8 12h8M12 7v10" />
-        </svg>
-        <span>Bellwright Mod Launcher</span>
+        <img
+          src="./assets/branding/exone-lion-titlebar-24.png"
+          srcset="./assets/branding/exone-lion-titlebar-48.png 2x"
+          alt=""
+          aria-hidden="true"
+        />
+        <span>ExOne Mod Launcher</span>
       </div>
       <div class="windowControls">
         <button id="windowMinimizeButton" class="windowControlButton" type="button" title="Minimize" aria-label="Minimize window">
@@ -27,15 +29,14 @@
     <main class="shell">
       <section class="topbar">
         <div class="brand">
-          <div class="mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24">
-              <path d="M12 2 4 6v6c0 5.1 3.4 8.7 8 10 4.6-1.3 8-4.9 8-10V6l-8-4Z" />
-              <path d="M8 12h8M12 7v10" />
-            </svg>
-          </div>
-          <div>
-            <h1>Bellwright Mod Launcher</h1>
+          <div id="gameMark" class="mark" aria-hidden="true"></div>
+          <div id="gameSwitcher" class="gameSwitcher">
+            <button id="gameSwitcherButton" class="gameSwitcherButton" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="gameSwitcherMenu">
+              <span id="gameHeading" class="gameHeading">Bellwright Mod Launcher</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
+            </button>
             <p id="pathLine">Scanning local mods...</p>
+            <div id="gameSwitcherMenu" class="gameSwitcherMenu" role="menu" hidden></div>
           </div>
         </div>
         <div class="actions">
@@ -48,6 +49,10 @@
           <button id="launchButton" class="launchButton">
             <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7-11-7Z" /></svg>
             Launch
+          </button>
+          <button id="continueButton" class="continueButton" type="button">
+            <svg viewBox="0 0 24 24"><path d="M7 7v10l8-5-8-5Z" /><path d="M18 6v12" /></svg>
+            Continue from last save
           </button>
         </div>
       </section>
@@ -69,7 +74,7 @@
           <span class="label">Workshop</span>
           <strong id="workshopCount">0</strong>
         </div>
-        <div class="statusItem">
+        <div id="nativeRuntimeStatusItem" class="statusItem">
           <span class="label">Native runtime</span>
           <strong id="nativeRuntimeState">Idle</strong>
         </div>
@@ -123,8 +128,8 @@
         <section class="modColumn" data-drop-target="available">
           <div class="columnHeader">
             <div>
-              <h2>Available</h2>
-              <p>Installed but not active</p>
+              <h2 id="availableColumnTitle">Available</h2>
+              <p id="availableColumnHint">Installed but not active</p>
             </div>
             <strong id="availableColumnCount">0</strong>
           </div>
@@ -135,8 +140,8 @@
         <section class="modColumn activeColumn" data-drop-target="active">
           <div class="columnHeader">
             <div>
-              <h2>Active</h2>
-              <p>Loaded by Bellwright</p>
+              <h2 id="activeColumnTitle">Active</h2>
+              <p id="activeColumnHint">Loaded by Bellwright</p>
             </div>
             <strong id="activeColumnCount">0</strong>
           </div>
@@ -167,7 +172,7 @@
             <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
           </button>
         </div>
-        <textarea id="shareCodeInput" class="shareCodeInput" placeholder="Paste BWL1 preset code" aria-label="Bellwright preset share code" spellcheck="false"></textarea>
+        <textarea id="shareCodeInput" class="shareCodeInput" placeholder="Paste BWL1 preset code" aria-label="Selected game preset share code" spellcheck="false"></textarea>
         <section id="sharePreview" class="sharePreview" aria-live="polite" hidden>
           <div class="sharePreviewSummary">
             <div>
@@ -209,6 +214,7 @@
     <div id="toast" class="toast" hidden></div>
     <div id="conflictTooltip" class="conflictTooltip" role="tooltip" hidden></div>
 
+    <script src="./drag-order.js"></script>
     <script src="./renderer.js"></script>
   </body>
 </html>
