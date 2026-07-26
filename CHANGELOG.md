@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.7.2] - 2026-07-26
+
+### ExOne and multi-game support
+
+- Rename the application and Windows package to **ExOne Mod Launcher**, with the ExcelsiorOne lion used for the title bar, window, executable, and legacy-shortcut icon.
+- Add a subtle in-content game switcher while keeping the compact application title bar separate from the selected game's identity.
+- Preserve the existing `bellwright-mod-launcher` user-data directory so presets, native-code trust decisions, settings, and selected game survive the rebrand.
+- Include a small `BellwrightModLauncher.exe` compatibility launcher so existing shortcuts and the public v0.6.1 updater can transition safely to `ExOneModLauncher.exe`.
+
+### Total War: WARHAMMER III
+
+- Add safe in-place activation, deactivation, filtered drag ordering, game-specific presets, preset sharing/import, Workshop-folder access, running-state detection, and direct launch through `used_mods.txt;`.
+- Keep every Steam Workshop folder and `.pack` file in place; selection changes are isolated to the atomic `used_mods.txt` writer.
+- Make priority intuitive in both games: mod `#1` at the top is highest priority. Bellwright writes it last because its engine priority rises with array position; WH3 writes it first to match the verified WH3 Mod Manager convention.
+- Add a real **Continue from last save** button immediately after Launch. It selects the newest `.save` and uses the verified `game_startup_mode campaign_load "<save>" ; used_mods.txt;` sequence from WH3 Mod Manager v2.19.1.
+- Hide Continue for Bellwright because no equivalent direct-resume mechanism has been verified; ordinary Bellwright launch behavior remains unchanged.
+- Detect matching internal pack files without editing the packs. Exact ordinary file overlaps show the current priority winner; database-table and movie-pack overlaps are reported without inventing a load-order winner.
+- Read local Steam Workshop metadata/cache for official titles and thumbnails, preserve a local-image fallback, and fit previews without cropping.
+- Keep Bellwright-only Native Runtime status and behavior out of the WH3 view; the remaining four dashboard items expand evenly across the row.
+
+### Shared launcher fixes
+
+- Keep search active across both columns while allowing filtered drag-and-drop to place a mod relative to the visible anchor without disturbing hidden entries.
+- Replace the in-content selected-game mark with the installed game's executable icon while preserving the ExOne lion as the application icon.
+- Include the WH3 Mod Manager MIT attribution in `THIRD_PARTY_NOTICES.md`.
+- Preserve all existing Bellwright activation, ordering, presets, settings, native-runtime loading, updater, and Workshop behavior.
+
 ## [0.6.1] - 2026-07-22
 
 - Make file-conflict details accept mouse input and scroll independently instead of scrolling the mod list behind them.

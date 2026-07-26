@@ -2,7 +2,17 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 
 const UPDATE_ARTIFACT_SUFFIX = /\.(?:new|old)-\d{17}$/i;
-const VERSIONED_PORTABLE_FOLDER = /^BellwrightModLauncher-v(\d+\.\d+\.\d+)-win-x64-portable$/i;
+const PORTABLE_FOLDERS = Object.freeze([
+  {
+    pattern: /^ExOneModLauncher-v(\d+\.\d+\.\d+)-win-x64-portable$/i,
+    executable: "ExOneModLauncher.exe"
+  },
+  {
+    pattern: /^BellwrightModLauncher-v(\d+\.\d+\.\d+)-win-x64-portable$/i,
+    executable: "BellwrightModLauncher.exe"
+  }
+]);
+const STABLE_INSTALL_FOLDERS = new Set(["exonemodlauncher", "bellwrightmodlauncher"]);
 const RETRYABLE_REMOVAL_CODES = new Set(["EACCES", "EBUSY", "ENOTEMPTY", "EPERM"]);
 const REMOVE_ATTEMPTS = 4;
 const REMOVE_RETRY_DELAY_MS = 250;
@@ -120,8 +130,19 @@ function isKnownUpdateArtifact(name, installLeaf) {
   const baseName = name.replace(UPDATE_ARTIFACT_SUFFIX, "");
   return (
     baseName.toLowerCase() === installLeaf.toLowerCase() ||
+    baseName.toLowerCase().startsWith("exonemodlauncher") ||
     baseName.toLowerCase().startsWith("bellwrightmodlauncher")
   );
+}
+
+function describePortableFolder(folderName) {
+  for (const descriptor of PORTABLE_FOLDERS) {
+    const match = folderName.match(descriptor.pattern);
+    if (match) {
+      return { version: match[1], executable: descriptor.executable };
+    }
+  }
+  return null;
 }
 
 async function removeUpdateSession(updateRoot) {
@@ -186,13 +207,13 @@ async function cleanupUpdateArtifacts({ userDataPath, installDir, currentVersion
     }
 
     let shouldRemove = isKnownUpdateArtifact(entry.name, installLeaf);
-    const versionedMatch = entry.name.match(VERSIONED_PORTABLE_FOLDER);
-    if (!shouldRemove && installLeaf.toLowerCase() === "bellwrightmodlauncher" && versionedMatch) {
+    const portableFolder = describePortableFolder(entry.name);
+    if (!shouldRemove && STABLE_INSTALL_FOLDERS.has(installLeaf.toLowerCase()) && portableFolder) {
       const packagedVersion = await readPackagedVersion(candidate);
       shouldRemove = Boolean(
         packagedVersion &&
         compareVersions(packagedVersion, currentVersion) < 0 &&
-        await exists(path.join(candidate, "BellwrightModLauncher.exe"))
+        await exists(path.join(candidate, portableFolder.executable))
       );
     }
 

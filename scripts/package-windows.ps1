@@ -7,12 +7,16 @@ $version = $packageJson.version
 $electronDist = Join-Path $projectRoot "node_modules\electron\dist"
 $distRoot = Join-Path $projectRoot "dist"
 $releaseRoot = Join-Path $projectRoot "release"
-$archiveName = "BellwrightModLauncher-v$version-win-x64-portable"
-$appFolderName = "BellwrightModLauncher"
+$archiveName = "ExOneModLauncher-v$version-win-x64-portable"
+$appFolderName = "ExOneModLauncher"
+$exeName = "ExOneModLauncher.exe"
+$legacyExeName = "BellwrightModLauncher.exe"
+$iconPath = Join-Path $projectRoot "renderer\assets\branding\exone-lion.ico"
 $outDir = Join-Path $distRoot $appFolderName
 $zipPath = Join-Path $releaseRoot "$archiveName.zip"
 
 & (Join-Path $PSScriptRoot "build-update-handoff.ps1")
+& (Join-Path $PSScriptRoot "build-legacy-launcher.ps1")
 
 if (-not (Test-Path -LiteralPath (Join-Path $electronDist "electron.exe"))) {
   throw "Electron runtime not found. Run npm install first."
@@ -35,7 +39,25 @@ if (Test-Path -LiteralPath $zipPath) {
 }
 
 Copy-Item -LiteralPath $electronDist -Destination $outDir -Recurse
-Rename-Item -LiteralPath (Join-Path $outDir "electron.exe") -NewName "BellwrightModLauncher.exe"
+Rename-Item -LiteralPath (Join-Path $outDir "electron.exe") -NewName $exeName
+& node (Join-Path $PSScriptRoot "brand-windows-exe.js") `
+  (Join-Path $outDir $exeName) `
+  $iconPath `
+  $version
+if ($LASTEXITCODE -ne 0) {
+  throw "Windows executable branding failed with exit code $LASTEXITCODE"
+}
+Copy-Item -LiteralPath (Join-Path $projectRoot "runtime\$legacyExeName") -Destination (Join-Path $outDir $legacyExeName)
+& node (Join-Path $PSScriptRoot "brand-windows-exe.js") `
+  (Join-Path $outDir $legacyExeName) `
+  $iconPath `
+  $version `
+  $legacyExeName `
+  "ExOneLegacyLauncher" `
+  "ExOne Mod Launcher compatibility launcher"
+if ($LASTEXITCODE -ne 0) {
+  throw "Legacy Windows executable branding failed with exit code $LASTEXITCODE"
+}
 
 # Electron's fallback app is not used when resources\app is present. Leaving it
 # in update archives lets an older Electron handoff keep the extracted copy open,
@@ -48,6 +70,15 @@ if (Test-Path -LiteralPath $defaultElectronApp) {
 $appRoot = Join-Path $outDir "resources\app"
 New-Item -ItemType Directory -Force -Path $appRoot | Out-Null
 Copy-Item -LiteralPath (Join-Path $projectRoot "main.js") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "game-registry.js") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "game-selection.js") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "game-launch.js") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "warhammer3-saves.js") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "warhammer3-selection.js") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "warhammer3-preset.js") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "priority-order.js") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "steam-workshop-thumbnails.js") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "warhammer3-conflicts.js") -Destination $appRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "native-runtime.js") -Destination $appRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "native-discovery.js") -Destination $appRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "native-signature.js") -Destination $appRoot
@@ -57,6 +88,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot "preload.js") -Destination $appRo
 Copy-Item -LiteralPath (Join-Path $projectRoot "package.json") -Destination $appRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "package-lock.json") -Destination $appRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "LICENSE") -Destination $appRoot
+Copy-Item -LiteralPath (Join-Path $projectRoot "THIRD_PARTY_NOTICES.md") -Destination $appRoot
 Copy-Item -LiteralPath (Join-Path $projectRoot "renderer") -Destination $appRoot -Recurse
 Copy-Item -LiteralPath (Join-Path $projectRoot "runtime") -Destination $appRoot -Recurse
 

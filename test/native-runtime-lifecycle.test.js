@@ -38,16 +38,20 @@ function createMinimalX64Dll(marker = "") {
 
 test("closing the launcher cannot cancel a pending native-runtime injection", () => {
   const launchHandler = main.match(/ipcMain\.handle\("mods:launchGame"[\s\S]*?\n}\);/)?.[0] || "";
+  const bellwrightLaunch = main.match(
+    /async function launchBellwrightSelectedGame\(\)[\s\S]*?\r?\n}\r?\n\r?\nasync function launchSelectedGame/
+  )?.[0] || "";
   const closeHandler = main.match(/app\.on\("window-all-closed"[\s\S]*?\n}\);/)?.[0] || "";
 
-  assert.match(launchHandler, /keepAliveForGameLaunchUntil = Date\.now\(\) \+ 120000/);
+  assert.match(launchHandler, /launchSelectedGame\(\)/);
+  assert.match(bellwrightLaunch, /keepAliveForGameLaunchUntil = Date\.now\(\) \+ 120000/);
   assert.match(closeHandler, /!lastKnownGameRunning && !waitingForGame/);
 });
 
 test("a background launcher exits after Bellwright closes", () => {
   const poller = main.match(/async function pollGameRunning\(\)[\s\S]*?\r?\n}\r?\n\r?\nfunction startGameRunningWatcher/)?.[0] || "";
 
-  assert.match(poller, /!gameRunning && !mainWindow && Date\.now\(\) >= keepAliveForGameLaunchUntil/);
+  assert.match(poller, /!bellwrightRunning && !mainWindow && Date\.now\(\) >= keepAliveForGameLaunchUntil/);
   assert.match(poller, /app\.quit\(\)/);
 });
 
