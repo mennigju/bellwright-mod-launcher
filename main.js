@@ -488,6 +488,9 @@ app.whenReady().then(async () => {
     fs
   });
   selectedGameId = await gameSelectionStore.load();
+  if (selectedGameId === "warhammer3" && IS_LINUX) {
+    selectedGameId = await gameSelectionStore.set(DEFAULT_GAME_ID);
+  }
   nativeRuntimeManager = new NativeRuntimeManager({
     userDataPath: app.getPath("userData"),
     bundledInjectorPath: path.join(resolveRuntimeDir(), "BellwrightNativeInjector.exe"),
@@ -1593,6 +1596,9 @@ function assertBellwrightSelected() {
 async function setSelectedGame(gameId) {
   if (!isKnownGame(gameId)) {
     throw new Error("Unknown game selection.");
+  }
+  if (gameId === "warhammer3" && IS_LINUX) {
+    throw new Error("Total War: WARHAMMER III is not yet supported on Linux.");
   }
   selectedGameId = gameSelectionStore ? await gameSelectionStore.set(gameId) : gameId;
   lastKnownSelectedGameRunning = null;
@@ -2992,7 +2998,11 @@ function getAppInfo() {
 }
 
 ipcMain.handle("mods:getState", getState);
-ipcMain.handle("games:list", async () => listGames().map(publicGame));
+ipcMain.handle("games:list", async () =>
+  listGames()
+    .filter((game) => game.id !== "warhammer3" || !IS_LINUX)
+    .map(publicGame)
+);
 ipcMain.handle("games:select", async (_event, gameId) => setSelectedGame(gameId));
 
 ipcMain.on("window:minimize", (event) => {
