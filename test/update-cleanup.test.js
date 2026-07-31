@@ -18,7 +18,10 @@ const {
 async function makePackagedFolder(parent, name, version) {
   const folder = path.join(parent, name);
   await fs.mkdir(path.join(folder, "resources", "app"), { recursive: true });
-  await fs.writeFile(path.join(folder, "BellwrightModLauncher.exe"), "test executable");
+  const executableName = name.toLowerCase().startsWith("exonemodlauncher")
+    ? "ExOneModLauncher.exe"
+    : "BellwrightModLauncher.exe";
+  await fs.writeFile(path.join(folder, executableName), "test executable");
   await fs.writeFile(
     path.join(folder, "resources", "app", "package.json"),
     JSON.stringify({ name: "bellwright-mod-launcher", version })
@@ -27,6 +30,14 @@ async function makePackagedFolder(parent, name, version) {
 }
 
 test("recognizes updater-created sibling folders without matching ordinary folders", () => {
+  assert.equal(isKnownUpdateArtifact("ExOneModLauncher.new-20260725231851080", "ExOneModLauncher"), true);
+  assert.equal(
+    isKnownUpdateArtifact(
+      "ExOneModLauncher-v0.6.1-win-x64-portable.old-20260725231851080",
+      "ExOneModLauncher"
+    ),
+    true
+  );
   assert.equal(isKnownUpdateArtifact("BellwrightModLauncher.new-20260716231851080", "BellwrightModLauncher"), true);
   assert.equal(
     isKnownUpdateArtifact(
@@ -191,6 +202,30 @@ test("removes update caches, failed siblings, and older adjacent portable instal
     await assert.rejects(fs.access(removedPath));
     assert.ok(removed.includes(removedPath));
   }
+});
+
+test("ExOne cleanup recognizes both new and legacy portable launcher folders", async (context) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "exone-update-cleanup-"));
+  context.after(() => fs.rm(root, { recursive: true, force: true }));
+  const userDataPath = path.join(root, "user-data");
+  const installParent = path.join(root, "programs");
+  const installDir = await makePackagedFolder(installParent, "ExOneModLauncher", "0.7.0");
+  const oldExOne = await makePackagedFolder(
+    installParent,
+    "ExOneModLauncher-v0.6.1-win-x64-portable",
+    "0.6.1"
+  );
+  const oldLegacy = await makePackagedFolder(
+    installParent,
+    "BellwrightModLauncher-v0.6.0-win-x64-portable",
+    "0.6.0"
+  );
+
+  await cleanupUpdateArtifacts({ userDataPath, installDir, currentVersion: "0.7.0" });
+
+  assert.equal(await fs.stat(installDir).then(() => true), true);
+  await assert.rejects(fs.access(oldExOne));
+  await assert.rejects(fs.access(oldLegacy));
 });
 
 test("discarding the only update session also removes the empty updates folder", async (context) => {

@@ -20,6 +20,8 @@
     "start": "electron .",
     "test": "node --test test/*.test.js",
     "test:layout": "electron scripts/verify-large-list-layout.js",
+    "test:switcher": "electron scripts/verify-game-switcher-layout.js",
+    "test:tooltip": "electron scripts/verify-workshop-tooltip-layout.js",
     "package:win": "powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1",
     "package:linux": "electron-builder --linux AppImage"
   },
@@ -47,6 +49,15 @@
       "update-cleanup.js",
       "linux-support.js",
       "linux-proton.js",
+      "game-registry.js",
+      "game-selection.js",
+      "game-launch.js",
+      "warhammer3-saves.js",
+      "warhammer3-selection.js",
+      "warhammer3-preset.js",
+      "warhammer3-conflicts.js",
+      "steam-workshop-thumbnails.js",
+      "priority-order.js",
       "preload.js",
       "package.json",
       "renderer/**/*"
@@ -72,9 +83,6 @@
       "provider": "github",
       "owner": "sergistarkusa",
       "repo": "bellwright-mod-launcher"
-    },
-    "test:switcher": "electron scripts/verify-game-switcher-layout.js",
-    "test:tooltip": "electron scripts/verify-workshop-tooltip-layout.js",
-    "package:win": "powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1"
+    }
   }
 }

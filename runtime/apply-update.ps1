@@ -104,7 +104,7 @@ function Show-UpdateFailure([string]$Message) {
     Add-Type -AssemblyName PresentationFramework
     [System.Windows.MessageBox]::Show(
       $Message,
-      "Bellwright Mod Launcher update failed",
+      "ExOne Mod Launcher update failed",
       [System.Windows.MessageBoxButton]::OK,
       [System.Windows.MessageBoxImage]::Error
     ) | Out-Null

@@ -182,7 +182,7 @@ internal static class BellwrightUpdateHandoff
             {
                 AppendLog(logPath, "Update handoff failed: " + error.Message);
             }
-            MessageBoxW(IntPtr.Zero, error.Message, "Bellwright Mod Launcher update failed", MbIconError);
+            MessageBoxW(IntPtr.Zero, error.Message, "ExOne Mod Launcher update failed", MbIconError);
             return 1;
         }
     }

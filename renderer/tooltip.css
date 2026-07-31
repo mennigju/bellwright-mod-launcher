@@ -51,6 +51,57 @@ body {
   overflow-wrap: anywhere;
 }
 
+.tooltipThumbnail {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 174px;
+  margin: 0 0 11px;
+  overflow: hidden;
+  border: 1px solid rgba(127, 176, 164, 0.34);
+  border-radius: 6px;
+  background: #0d100f;
+}
+
+.tooltipThumbnail img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  object-fit: contain;
+  object-position: center;
+  background: #0d100f;
+}
+
+.tooltipThumbnail img[hidden],
+.tooltipThumbnailFallback[hidden] {
+  display: none;
+}
+
+.tooltipThumbnailFallback {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.tooltipThumbnailGlyph {
+  width: 34px;
+  height: 28px;
+  border: 1px solid #56615b;
+  border-radius: 4px;
+  background:
+    radial-gradient(circle at 72% 28%, #68736c 0 3px, transparent 4px),
+    linear-gradient(145deg, transparent 49%, #4e5953 50% 58%, transparent 59%),
+    linear-gradient(35deg, transparent 43%, #3f4944 44% 58%, transparent 59%);
+}
+
 .pill {
   align-self: flex-start;
   padding: 4px 7px;
